@@ -2,11 +2,13 @@ import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 
-const N8N_BASE_URL = process.env.N8N_BASE_URL?.replace(/\/$/, '')
-if (!N8N_BASE_URL) {
+const n8nBaseUrl = process.env.N8N_BASE_URL?.replace(/\/$/, '')
+if (!n8nBaseUrl) {
   console.error('FATAL: N8N_BASE_URL environment variable is not set')
   process.exit(1)
 }
+
+const N8N_BASE_URL: string = n8nBaseUrl
 
 const PORT = Number(process.env.PORT ?? 3000)
 

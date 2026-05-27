@@ -7,7 +7,8 @@
     "rootDir": "src",
     "strict": true,
     "skipLibCheck": true,
-    "sourceMap": false
+    "sourceMap": false,
+    "types": ["node"]
   },
   "include": ["src"]
 }
