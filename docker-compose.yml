@@ -1,0 +1,29 @@
+services:
+  n8n-webhook-middleware:
+    image: n8n-webhook-middleware:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - traefik_reverse_proxy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "traefik.enable=true"
+      # Only route POST requests to /webhook/* and /webhook-test/*
+      - "traefik.http.routers.n8n-webhooks.rule=(PathPrefix(`/webhook/`) || PathPrefix(`/webhook-test/`)) && Method(`POST`)"
+      - "traefik.http.routers.n8n-webhooks.entrypoints=websecure"
+      - "traefik.http.routers.n8n-webhooks.tls=true"
+      - "traefik.http.services.n8n-webhooks.loadbalancer.server.port=3000"
+      # Required when container is on multiple networks — tells Traefik which one to use
+      # - "traefik.docker.network=traefik_network"
+
+networks:
+  traefik_reverse_proxy:
+    external: true
