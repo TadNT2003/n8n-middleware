@@ -1,6 +1,7 @@
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
-import type { Context } from 'hono'
+import type { Context, Next } from 'hono'
 
 const n8nBaseUrl = process.env.N8N_BASE_URL?.replace(/\/$/, '')
 if (!n8nBaseUrl) {
@@ -9,10 +10,12 @@ if (!n8nBaseUrl) {
 }
 
 const N8N_BASE_URL: string = n8nBaseUrl
-
 const PORT = Number(process.env.PORT ?? 3000)
+const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET
 
-const app = new Hono()
+type Variables = { rawBody: ArrayBuffer }
+
+const app = new Hono<{ Variables: Variables }>()
 
 app.use('*', async (c, next) => {
   const start = Date.now()
@@ -22,7 +25,34 @@ app.use('*', async (c, next) => {
 
 app.get('/health', (c) => c.json({ status: 'ok' }))
 
-async function proxyToN8N(c: Context): Promise<Response> {
+async function verifyGithubSignature(c: Context<{ Variables: Variables }>, next: Next): Promise<Response | void> {
+  if (!GITHUB_WEBHOOK_SECRET) {
+    return next()
+  }
+
+  const signature = c.req.header('x-hub-signature-256')
+  if (!signature) {
+    return c.text('Missing X-Hub-Signature-256 header', 401)
+  }
+
+  const body = await c.req.arrayBuffer()
+  const expected = 'sha256=' + createHmac('sha256', GITHUB_WEBHOOK_SECRET)
+    .update(Buffer.from(body))
+    .digest('hex')
+
+  const sigBuf = Buffer.from(signature)
+  const expBuf = Buffer.from(expected)
+
+  // timingSafeEqual requires equal-length buffers; length mismatch itself signals a bad signature
+  if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
+    return c.text('Invalid signature', 401)
+  }
+
+  c.set('rawBody', body)
+  return next()
+}
+
+async function proxyToN8N(c: Context<{ Variables: Variables }>): Promise<Response> {
   const url = new URL(c.req.url)
   const targetUrl = `${N8N_BASE_URL}${url.pathname}${url.search}`
 
@@ -31,10 +61,14 @@ async function proxyToN8N(c: Context): Promise<Response> {
   headers.set('x-forwarded-host', c.req.header('host') ?? '')
   headers.set('x-forwarded-proto', 'https')
 
+  // Use buffered body from signature verification when available (body stream already consumed)
+  const rawBody = c.get('rawBody')
+  const body = rawBody !== undefined ? rawBody : c.req.raw.body
+
   const upstream = await fetch(targetUrl, {
     method: c.req.method,
     headers,
-    body: c.req.raw.body,
+    body,
     // @ts-ignore — duplex required for streaming request bodies in Node.js fetch
     duplex: 'half',
   })
@@ -45,8 +79,8 @@ async function proxyToN8N(c: Context): Promise<Response> {
   })
 }
 
-app.post('/webhook/*', proxyToN8N)
-app.post('/webhook-test/*', proxyToN8N)
+app.post('/webhook/*', verifyGithubSignature, proxyToN8N)
+app.post('/webhook-test/*', verifyGithubSignature, proxyToN8N)
 
 app.notFound((c) => c.text('Not Found', 404))
 
