@@ -14,7 +14,7 @@ There are no tests or lint commands configured.
 
 ## Architecture
 
-A single-file HTTP proxy (`src/index.ts`) built on [Hono](https://hono.dev/) + `@hono/node-server`. Its only job: accept incoming POST requests at `/webhook/*` and `/webhook-test/*`, forward them verbatim to an internal n8n instance, and return the response. All other paths return 404. There is a `/health` endpoint for container health checks.
+A single-file HTTP proxy (`src/index.ts`) built on [Hono](https://hono.dev/) + `@hono/node-server`. By default it accepts only `POST /webhook/*` and `POST /webhook-test/*`, forwarding them verbatim to an internal n8n instance; all other paths return 404. When `N8N_EXPOSE_ALL=true`, a catch-all route proxies every method and path to n8n (full UI/API access). There is a `/health` endpoint for container health checks.
 
 **Request path:**
 ```

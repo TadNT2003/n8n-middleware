@@ -12,6 +12,7 @@ if (!n8nBaseUrl) {
 const N8N_BASE_URL: string = n8nBaseUrl
 const PORT = Number(process.env.PORT ?? 3000)
 const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET
+const EXPOSE_ALL = process.env.N8N_EXPOSE_ALL?.toLowerCase() === 'true'
 
 type Variables = { rawBody: ArrayBuffer }
 
@@ -82,9 +83,16 @@ async function proxyToN8N(c: Context<{ Variables: Variables }>): Promise<Respons
 app.post('/webhook/*', verifyGithubSignature, proxyToN8N)
 app.post('/webhook-test/*', verifyGithubSignature, proxyToN8N)
 
+if (EXPOSE_ALL) {
+  app.all('*', proxyToN8N)
+}
+
 app.notFound((c) => c.text('Not Found', 404))
 
 serve({ fetch: app.fetch, port: PORT }, (info) => {
   console.log(`n8n webhook middleware listening on :${info.port}`)
   console.log(`Proxying POST /webhook/* and /webhook-test/* → ${N8N_BASE_URL}`)
+  if (EXPOSE_ALL) {
+    console.log('WARNING: N8N_EXPOSE_ALL=true — all paths are proxied to n8n (full UI/API exposed)')
+  }
 })
