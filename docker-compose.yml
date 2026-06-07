@@ -24,6 +24,13 @@ services:
       - "traefik.http.routers.n8n-webhooks-proxy.entrypoints=web,websecure"
       - "traefik.http.routers.n8n-webhooks-proxy.tls=true"
       - "traefik.http.services.n8n-webhooks-proxy.loadbalancer.server.port=3000"
+      # Catch-all router — required when N8N_EXPOSE_ALL=true.
+      # Routes ALL methods/paths to the middleware; the middleware gates access based on N8N_EXPOSE_ALL.
+      # Shorter rule = lower Traefik auto-priority; webhook router always wins for /webhook/* POST.
+      - "traefik.http.routers.n8n-all-proxy.rule=Host(`${N8N_MIDDLEWARE_HOST}`)"
+      - "traefik.http.routers.n8n-all-proxy.entrypoints=web,websecure"
+      - "traefik.http.routers.n8n-all-proxy.tls=true"
+      - "traefik.http.routers.n8n-all-proxy.service=n8n-webhooks-proxy"
       # Required when container is on multiple networks — tells Traefik which one to use
       # - "traefik.docker.network=traefik_network"
 
