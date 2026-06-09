@@ -12,7 +12,8 @@ if (!n8nBaseUrl) {
 const N8N_BASE_URL: string = n8nBaseUrl
 const PORT = Number(process.env.PORT ?? 3000)
 const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET
-const EXPOSE_ALL = process.env.N8N_EXPOSE_ALL?.toLowerCase() === 'true'
+const EXPOSE_UI  = process.env.N8N_EXPOSE_UI?.toLowerCase()  === 'true'
+const EXPOSE_API = process.env.N8N_EXPOSE_API?.toLowerCase() === 'true'
 
 type Variables = { rawBody: ArrayBuffer }
 
@@ -83,8 +84,16 @@ async function proxyToN8N(c: Context<{ Variables: Variables }>): Promise<Respons
 app.post('/webhook/*', verifyGithubSignature, proxyToN8N)
 app.post('/webhook-test/*', verifyGithubSignature, proxyToN8N)
 
-if (EXPOSE_ALL) {
-  app.all('*', proxyToN8N)
+if (EXPOSE_UI) {
+  // Proxy all non-API paths: SPA, static assets, and /rest/* (n8n's internal API used by the UI)
+  app.all('*', (c, next) => {
+    if (c.req.path.startsWith('/api/')) return next()
+    return proxyToN8N(c)
+  })
+}
+
+if (EXPOSE_API) {
+  app.all('/api/*', proxyToN8N)
 }
 
 app.notFound((c) => c.text('Not Found', 404))
@@ -92,7 +101,6 @@ app.notFound((c) => c.text('Not Found', 404))
 serve({ fetch: app.fetch, port: PORT }, (info) => {
   console.log(`n8n webhook middleware listening on :${info.port}`)
   console.log(`Proxying POST /webhook/* and /webhook-test/* → ${N8N_BASE_URL}`)
-  if (EXPOSE_ALL) {
-    console.log('WARNING: N8N_EXPOSE_ALL=true — all paths are proxied to n8n (full UI/API exposed)')
-  }
+  if (EXPOSE_UI)  console.log('WARNING: N8N_EXPOSE_UI=true  — n8n web interface is publicly accessible')
+  if (EXPOSE_API) console.log('WARNING: N8N_EXPOSE_API=true — n8n REST API (/api/*) is publicly accessible')
 })
