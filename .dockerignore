@@ -1,6 +1,19 @@
-node_modules/
-dist/
-.env
+# node_modules and dist directories
+node_modules
+dist
+
+# Claude config
+.claude
+
+# Environment files
+.env*
+
+# Archives and logs
 *.log
+
+# Documentations
 *.md
-.git/
+
+# Git files
+.git
+.gitignore
