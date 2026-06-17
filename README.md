@@ -8,7 +8,7 @@ A typical self-hosted n8n setup behind Traefik + Cloudflare Tunnel puts the enti
 
 This middleware solves that by becoming the only public-facing component. n8n is moved to the internal Docker network; the middleware receives incoming webhook POST requests and proxies them to n8n locally. Everything else returns 404.
 
-```
+```text
 Internet
   │  POST /webhook/<id>
   ▼
@@ -27,7 +27,7 @@ n8n (internal network only)
 ## Stack
 
 | | |
-|---|---|
+| --- | --- |
 | Framework | [Hono](https://hono.dev/) v4 — ~14 KB, TypeScript-first |
 | Runtime | Node.js 22 LTS (built-in `fetch`, no extra HTTP client) |
 | Language | TypeScript, compiled to ESM |
@@ -40,8 +40,8 @@ n8n (internal network only)
 | `GET` | `/health` | always | Returns `{"status":"ok"}` |
 | `POST` | `/webhook/*` | always | GitHub signature check (if secret set) → proxied to n8n |
 | `POST` | `/webhook-test/*` | always | GitHub signature check (if secret set) → proxied to n8n |
-| any | non-`/api/*` paths | `N8N_EXPOSE_UI=true` | Proxied to n8n (web interface, static assets, `/rest/*`) |
-| any | `/api/*` | `N8N_EXPOSE_API=true` | Proxied to n8n (public REST API) |
+| any | non-`/api/*` paths | `N8N_EXPOSE_UI=true` | Proxied to n8n — HTTP and WebSocket |
+| any | `/api/*` | `N8N_EXPOSE_API=true` | Proxied to n8n — HTTP and WebSocket |
 | any | anything else | — | `404 Not Found` |
 
 The `n8n-webhooks-proxy` Traefik router (POST + webhook paths only) and the `n8n-all-proxy` Traefik router (all methods/paths) are both always declared in `docker-compose.yml`. The middleware itself is the access gate — when `N8N_EXPOSE_UI` and `N8N_EXPOSE_API` are both false, non-webhook traffic still returns 404 even though Traefik routes it to the container.
@@ -123,7 +123,7 @@ docker compose logs -f n8n-webhook-middleware
 
 The `docker-compose.yml` labels configure a Traefik router named `n8n-webhooks-proxy`:
 
-```
+```yaml
 rule: (PathPrefix(`/webhook/`) || PathPrefix(`/webhook-test/`)) && Method(`POST`) && Host(`<N8N_MIDDLEWARE_HOST>`)
 entrypoints: web, websecure
 tls: true
@@ -136,6 +136,7 @@ Traefik reads these labels automatically via the Docker provider. No static Trae
 1. **Remove or narrow the webhook router on n8n** — if n8n's Traefik labels currently route `/webhook/*` to it, remove that rule (or restrict it to internal-only entrypoints). Otherwise Traefik will load-balance between the middleware and n8n directly.
 
 2. **Update n8n's `N8N_WEBHOOK_URL` environment variable** — n8n uses this to build the callback URLs it shows in the workflow editor. It should still point to your public domain so the generated URLs are correct:
+
    ```dotenv
    N8N_WEBHOOK_URL=https://n8n.mydomain.com/
    ```
@@ -161,7 +162,7 @@ npm start
 
 ## Project structure
 
-```
+```text
 n8n-middleware/
 ├── src/
 │   └── index.ts          # Hono server — proxy logic, logging, health check

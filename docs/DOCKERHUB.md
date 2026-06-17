@@ -22,6 +22,7 @@ n8n runs on an internal Docker network with no public exposure. This container i
 - **GitHub signature verification** — optional HMAC-SHA256 validation via `GITHUB_WEBHOOK_SECRET`; invalid or unsigned requests are rejected with `401` before reaching n8n
 - **Configurable UI exposure** — set `N8N_EXPOSE_UI=true` to proxy the full n8n web interface through the middleware
 - **Configurable API exposure** — set `N8N_EXPOSE_API=true` to proxy the n8n REST API (`/api/*`) through the middleware
+- **WebSocket support** — when UI or API exposure is enabled, WebSocket upgrade requests are tunneled directly to n8n over raw TCP, so the live execution status indicator in the n8n editor works over a public domain
 - **Health endpoint** — `GET /health` returns `{"status":"ok"}` for container health checks
 - **X-Forwarded headers** — sets `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto` so n8n sees the real client origin
 - **Streaming proxy** — request and response bodies are streamed without buffering (body is buffered only when GitHub signature verification is active)
@@ -87,8 +88,8 @@ networks:
 | `GET` | `/health` | Always | Returns `{"status":"ok"}` |
 | `POST` | `/webhook/*` | Always | GitHub signature check (if secret set) → proxy to n8n |
 | `POST` | `/webhook-test/*` | Always | GitHub signature check (if secret set) → proxy to n8n |
-| Any | non-`/api/*` paths | `N8N_EXPOSE_UI=true` | Proxy to n8n |
-| Any | `/api/*` | `N8N_EXPOSE_API=true` | Proxy to n8n |
+| Any | non-`/api/*` paths | `N8N_EXPOSE_UI=true` | Proxy to n8n (HTTP + WebSocket) |
+| Any | `/api/*` | `N8N_EXPOSE_API=true` | Proxy to n8n (HTTP + WebSocket) |
 | Any | Anything else | — | `404 Not Found` |
 
 ---
@@ -102,12 +103,6 @@ When `GITHUB_WEBHOOK_SECRET` is set, the middleware verifies every incoming webh
 3. Returns `401 Invalid signature` on mismatch; forwards to n8n on success
 
 This matches the [GitHub webhook security specification](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries).
-
----
-
-## Known limitations
-
-- **WebSockets are not supported.** The n8n UI uses WebSocket connections for live execution status. These will fail when proxied through this middleware. Workflow execution itself is unaffected; only the real-time UI indicator does not work.
 
 ---
 
