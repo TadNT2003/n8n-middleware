@@ -42,8 +42,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ghcr.io/${{ github.repository_owner }}/crimson-duchess
-            ${{ secrets.DOCKERHUB_USERNAME }}/crimson-duchess
+            ghcr.io/${{ github.repository_owner }}/n8n-webhook-middleware
+            ${{ secrets.DOCKERHUB_USERNAME }}/n8n-webhook-middleware
           tags: |
             type=ref,event=tag
             type=raw,value=latest
