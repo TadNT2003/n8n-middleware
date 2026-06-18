@@ -1,0 +1,29 @@
+name: Check Tag
+
+on:
+  push:
+    tags:
+      - '**'
+  workflow_call:
+
+jobs:
+  validate-tag-branch:
+    name: Validate Tag is on Main or Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check tag commit is on main or release
+        run: |
+          git fetch origin main release
+          on_main=$(git merge-base --is-ancestor ${{ github.sha }} origin/main && echo true || echo false)
+          on_release=$(git merge-base --is-ancestor ${{ github.sha }} origin/release && echo true || echo false)
+          if [ "$on_main" = "false" ] && [ "$on_release" = "false" ]; then
+            echo "::error::Tag must be created from the main or release branch."
+            exit 1
+          fi
+          echo "Tag commit is on an allowed branch."
