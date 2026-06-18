@@ -12,8 +12,14 @@ Cloudflare Tunnel  (không expose port vật lý ra ngoài)
   │
   ▼
 Traefik  (traefik_reverse_proxy network)
-  │  POST /webhook/* → Hono middleware → n8n
-  │  GET  *          → 404
+  │  n8n-webhooks-proxy : POST /webhook/* hoặc /webhook-test/*
+  │  n8n-all-proxy      : tất cả method / path còn lại
+  ▼
+Hono middleware  (kiểm soát truy cập theo biến môi trường)
+  │  /webhook/*         → xác thực chữ ký GitHub (nếu có secret) → proxy n8n
+  │  non-/api/* paths   → proxy n8n (chỉ khi N8N_EXPOSE_UI=true)
+  │  /api/*             → proxy n8n (chỉ khi N8N_EXPOSE_API=true)
+  │  còn lại            → 404
   ▼
 n8n Enterprise  (chỉ nằm trên internal Docker network)
 ```
@@ -26,29 +32,46 @@ Middleware được xây dựng bằng [Hono](https://hono.dev/) v4 trên Node.j
 
 ### Bảng route
 
-| Method | Path | Hành vi |
-|--------|------|---------|
-| `POST` | `/webhook/*` | Proxy sang `http://n8n:5678/webhook/*` |
-| `POST` | `/webhook-test/*` | Proxy sang `http://n8n:5678/webhook-test/*` |
-| `GET` | `/health` | Trả về `{"status":"ok"}` |
-| Bất kỳ | Tất cả còn lại | `404 Not Found` |
+| Method | Path | Điều kiện | Hành vi |
+| --- | --- | --- | --- |
+| `GET` | `/health` | Luôn bật | Trả về `{"status":"ok"}` |
+| `POST` | `/webhook/*` | Luôn bật | Xác thực chữ ký GitHub (nếu có secret) → proxy n8n |
+| `POST` | `/webhook-test/*` | Luôn bật | Xác thực chữ ký GitHub (nếu có secret) → proxy n8n |
+| Bất kỳ | Các path không phải `/api/*` | `N8N_EXPOSE_UI=true` | Proxy n8n (giao diện web, static assets, `/rest/*`) |
+| Bất kỳ | `/api/*` | `N8N_EXPOSE_API=true` | Proxy n8n (REST API công khai) |
+| Bất kỳ | Tất cả còn lại | — | `404 Not Found` |
+
+### Xác thực chữ ký GitHub
+
+Khi biến môi trường `GITHUB_WEBHOOK_SECRET` được đặt, middleware sẽ xác thực mọi request `POST /webhook/*` trước khi proxy sang n8n:
+
+1. Kiểm tra header `X-Hub-Signature-256` — trả về `401` nếu thiếu
+2. Tính HMAC-SHA256 của request body với secret làm key, so sánh với chữ ký nhận được
+3. Dùng so sánh constant-time (`timingSafeEqual`) để tránh timing attack
+4. Trả về `401 Invalid signature` nếu không khớp; forward sang n8n nếu hợp lệ
+
+Khi xác thực được kích hoạt, body của request được **buffer vào bộ nhớ** (thay vì stream trực tiếp) để tính HMAC, sau đó buffer đó được dùng lại khi gọi n8n.
 
 ### Cơ chế proxy
 
-Mỗi request `POST /webhook/*` đến được chuyển tiếp đến n8n với toàn bộ thông tin gốc:
+Mỗi request được proxy sang n8n với toàn bộ thông tin gốc:
 
-- **Body** được stream trực tiếp, không buffer — hỗ trợ payload JSON lớn và dữ liệu nhị phân
+- **Body** được stream trực tiếp (không buffer) khi không có xác thực chữ ký; được buffer để tính HMAC khi `GITHUB_WEBHOOK_SECRET` được đặt
 - **Headers** được giữ nguyên, đồng thời bổ sung `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto: https` để n8n nhận ra client thực
 - **Query string** được bảo toàn — nhiều webhook sender (như GitHub) gửi tham số trên URL
 - **Response** từ n8n (status code, headers, body) được stream ngược về caller không thay đổi
 
-Traefik lọc thêm một lớp nữa bằng router rule ở cấp load-balancer:
+Traefik có hai router rule ở cấp load-balancer:
 
 ```
-rule: (PathPrefix(`/webhook/`) || PathPrefix(`/webhook-test/`)) && Method(`POST`) && Host(`n8n.mydomain.com`)
+# Router chuyên biệt cho webhook (ưu tiên cao hơn)
+n8n-webhooks-proxy: (PathPrefix(`/webhook/`) || PathPrefix(`/webhook-test/`)) && Method(`POST`) && Host(`n8n.mydomain.com`)
+
+# Router bắt-tất-cả (ưu tiên thấp hơn, cần thiết khi bật N8N_EXPOSE_UI hoặc N8N_EXPOSE_API)
+n8n-all-proxy: Host(`n8n.mydomain.com`)
 ```
 
-Nhờ điều kiện `Method(POST)`, các request không phải POST bị Traefik từ chối trước khi chạm đến middleware.
+Router `n8n-all-proxy` luôn được khai báo trong `docker-compose.yml`. Khi cả `N8N_EXPOSE_UI` và `N8N_EXPOSE_API` đều là `false`, traffic vào router này vẫn nhận `404` từ middleware — không có rủi ro bảo mật.
 
 ---
 
@@ -89,8 +112,9 @@ Cloudflare Tunnel → Traefik
   │  Rule khớp: POST + PathPrefix(/webhook/) + Host(n8n.mydomain.com)
   ▼
 Hono middleware
+  │  Xác thực X-Hub-Signature-256 (HMAC-SHA256 với GITHUB_WEBHOOK_SECRET)
   │  Thêm X-Forwarded-For, X-Forwarded-Proto: https
-  │  Stream body và headers sang n8n
+  │  Forward body và headers sang n8n
   ▼
 n8n  (xử lý workflow, trả về 200)
   │
@@ -98,7 +122,7 @@ n8n  (xử lý workflow, trả về 200)
 Hono middleware stream response về → Traefik → Cloudflare → GitHub
 ```
 
-n8n nhận được đầy đủ headers gốc từ GitHub (bao gồm `X-Hub-Signature-256` để verify HMAC), đảm bảo tính toàn vẹn của webhook. GitHub nhận được HTTP 200, xác nhận delivery thành công.
+Middleware tự xác thực `X-Hub-Signature-256` trước khi forward — nếu chữ ký sai hoặc thiếu, request bị từ chối ngay tại middleware với `401`, không bao giờ chạm đến n8n. Sau khi xác thực thành công, n8n nhận được đầy đủ headers gốc từ GitHub và trả về HTTP 200, GitHub xác nhận delivery thành công.
 
 ---
 
@@ -107,10 +131,11 @@ n8n nhận được đầy đủ headers gốc từ GitHub (bao gồm `X-Hub-Sig
 Traefik là điểm vào duy nhất cho tất cả traffic HTTP/HTTPS từ internet vào hạ tầng:
 
 | Service | Tiếp cận qua Traefik | Router rule |
-|---------|----------------------|-------------|
-| Hono middleware | Có | `POST + /webhook/* + Host(n8n.mydomain.com)` |
+| --- | --- | --- |
+| Hono middleware (webhook) | Có | `POST + /webhook/* + Host(n8n.mydomain.com)` |
+| Hono middleware (all-proxy) | Có | `Host(n8n.mydomain.com)` — middleware tự gate theo `N8N_EXPOSE_*` |
 | mitmweb UI | Có | `Host(mitm.mydomain.com)` |
-| n8n UI/API | Không | Labels bị comment, không có router |
+| n8n UI/API trực tiếp | Không | Labels bị comment, không có router |
 
 Traefik đọc labels từ Docker provider, không cần thay đổi static config. TLS được quản lý tự động qua cert resolver (`mytlschallenge`). Cả middleware và mitmproxy đều join vào network `traefik_reverse_proxy` (external) để Traefik nhận diện và route.
 
@@ -171,6 +196,15 @@ WEBHOOK_URL=https://n8n.mydomain.com/
 N8N_BASE_URL=http://n8n:5678
 N8N_MIDDLEWARE_HOST=n8n.mydomain.com
 PORT=3000
+
+# Xác thực chữ ký GitHub (tuỳ chọn — bỏ trống nếu không dùng)
+GITHUB_WEBHOOK_SECRET=
+
+# Cho phép truy cập giao diện web n8n qua middleware (mặc định: false)
+N8N_EXPOSE_UI=false
+
+# Cho phép truy cập REST API công khai của n8n (/api/*) qua middleware (mặc định: false)
+N8N_EXPOSE_API=false
 ```
 
 Với cấu hình này, khi mở workflow editor, n8n hiển thị webhook URL dạng:
@@ -237,12 +271,14 @@ mitmproxy hoạt động transparent với n8n — n8n không cần thay đổi 
 ## 9. Tổng kết
 
 | Khía cạnh | Trạng thái | Chi tiết |
-|-----------|------------|----------|
-| n8n UI/API | Bị giới hạn trong local network | Chỉ truy cập qua Tailscale VPN hoặc mạng nội bộ |
-| Webhook từ internet | Hoạt động bình thường | Chỉ qua Hono middleware, đã test với GitHub |
+| --- | --- | --- |
+| n8n UI | Có thể cấu hình | Mặc định ẩn; bật `N8N_EXPOSE_UI=true` để expose qua middleware |
+| n8n REST API | Có thể cấu hình | Mặc định ẩn; bật `N8N_EXPOSE_API=true` để expose `/api/*` qua middleware |
+| Webhook từ internet | Hoạt động bình thường | Qua Hono middleware, có xác thực chữ ký GitHub nếu đặt secret |
+| Xác thực webhook GitHub | Có thể cấu hình | Bật bằng `GITHUB_WEBHOOK_SECRET`; dùng HMAC-SHA256, constant-time compare |
 | Kết nối đến provider bên ngoài | Hoạt động | Google, Atlassian, Discord đều kết nối được |
 | Outbound inspection | Hoạt động | mitmproxy intercept và log toàn bộ outbound HTTPS |
-| Bảo mật | Tốt | n8n không expose trực tiếp ra internet |
+| Bảo mật | Tốt | n8n không expose trực tiếp ra internet; middleware là điểm kiểm soát duy nhất |
 | TLS | Được quản lý tự động | Traefik + Cloudflare cert resolver |
 
-**Kết luận:** n8n hoạt động đầy đủ chức năng trong môi trường local network. Workflow engine, credential nodes, và webhook triggers đều chạy bình thường. Điểm khác biệt so với setup thông thường là n8n UI bị ẩn khỏi internet (chỉ dùng qua Tailscale), trong khi webhook endpoint vẫn công khai qua middleware — đây là sự đánh đổi hợp lý giữa bảo mật và tính năng trong môi trường self-host.
+**Kết luận:** n8n hoạt động đầy đủ chức năng trong môi trường local network. Middleware hiện có khả năng cấu hình linh hoạt hơn: webhook luôn hoạt động và tùy chọn có xác thực chữ ký GitHub; UI và REST API có thể bật độc lập theo nhu cầu. Mặc định vẫn giữ nguyên nguyên tắc ban đầu — chỉ webhook được public, n8n UI/API ẩn trong internal network và truy cập qua Tailscale.

@@ -1,6 +1,6 @@
 # n8n Webhook Middleware
 
-A lightweight HTTP proxy that sits in front of a self-hosted [n8n](https://n8n.io/) instance and exposes **only** its webhook endpoints to the public internet. All other n8n traffic stays on the internal Docker network.
+A lightweight HTTP proxy that sits in front of a self-hosted [n8n](https://n8n.io/) instance. By default it exposes **only** webhook endpoints to the public internet; everything else returns 404. Optionally the n8n web interface (`N8N_EXPOSE_UI`) and public REST API (`N8N_EXPOSE_API`) can be selectively enabled. Incoming webhook requests can be verified against a GitHub HMAC signature (`GITHUB_WEBHOOK_SECRET`).
 
 ## Why this exists
 
@@ -35,14 +35,16 @@ n8n (internal network only)
 
 ## Routes
 
-| Method | Path | Behaviour |
-|--------|------|-----------|
-| `POST` | `/webhook/*` | Proxied to n8n |
-| `POST` | `/webhook-test/*` | Proxied to n8n |
-| `GET` | `/health` | Returns `{"status":"ok"}` |
-| any | anything else | `404 Not Found` |
+| Method | Path | Condition | Behaviour |
+| --- | --- | --- | --- |
+| `GET` | `/health` | always | Returns `{"status":"ok"}` |
+| `POST` | `/webhook/*` | always | GitHub signature check (if secret set) → proxied to n8n |
+| `POST` | `/webhook-test/*` | always | GitHub signature check (if secret set) → proxied to n8n |
+| any | non-`/api/*` paths | `N8N_EXPOSE_UI=true` | Proxied to n8n (web interface, static assets, `/rest/*`) |
+| any | `/api/*` | `N8N_EXPOSE_API=true` | Proxied to n8n (public REST API) |
+| any | anything else | — | `404 Not Found` |
 
-The Traefik router rule further narrows this at the load-balancer level so non-POST requests never reach the container.
+The `n8n-webhooks-proxy` Traefik router (POST + webhook paths only) and the `n8n-all-proxy` Traefik router (all methods/paths) are both always declared in `docker-compose.yml`. The middleware itself is the access gate — when `N8N_EXPOSE_UI` and `N8N_EXPOSE_API` are both false, non-webhook traffic still returns 404 even though Traefik routes it to the container.
 
 ## Configuration
 
