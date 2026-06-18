@@ -1,10 +1,7 @@
 services:
   n8n-webhook-middleware:
-    image: n8n-webhook-middleware:latest
+    image: ntdat2003/n8n-webhook-middleware:latest
     container_name: n8n-webhook-middleware
-    build:
-      context: .
-      dockerfile: Dockerfile
     restart: unless-stopped
     env_file: .env
     expose:
