@@ -1,4 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
+import * as net from 'node:net'
+import type * as http from 'node:http'
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import type { Context, Next } from 'hono'
@@ -98,9 +100,61 @@ if (EXPOSE_API) {
 
 app.notFound((c) => c.text('Not Found', 404))
 
-serve({ fetch: app.fetch, port: PORT }, (info) => {
+const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
   console.log(`n8n webhook middleware listening on :${info.port}`)
   console.log(`Proxying POST /webhook/* and /webhook-test/* → ${N8N_BASE_URL}`)
   if (EXPOSE_UI)  console.log('WARNING: N8N_EXPOSE_UI=true  — n8n web interface is publicly accessible')
   if (EXPOSE_API) console.log('WARNING: N8N_EXPOSE_API=true — n8n REST API (/api/*) is publicly accessible')
 })
+
+// WebSocket proxy: tunnel upgrade requests directly to n8n over raw TCP.
+// fetch() is HTTP-only, so upgrade requests must be handled at the server level.
+if (EXPOSE_UI || EXPOSE_API) {
+  const n8nUrl = new URL(N8N_BASE_URL)
+  const targetHost = n8nUrl.hostname
+  const targetPort = parseInt(n8nUrl.port) || (n8nUrl.protocol === 'https:' ? 443 : 80)
+
+  ;(server as unknown as http.Server).on('upgrade', (req: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
+    const reqPath = req.url ?? '/'
+    const isApiPath = reqPath.startsWith('/api/')
+    const allowed = (EXPOSE_UI && !isApiPath) || (EXPOSE_API && isApiPath)
+
+    if (!allowed) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
+    const proxySocket = net.connect(targetPort, targetHost, () => {
+      const forwardedHeaders: Record<string, string | string[]> = { ...req.headers as Record<string, string | string[]> }
+      forwardedHeaders['x-forwarded-for'] = req.headers['x-forwarded-for'] ?? ''
+      forwardedHeaders['x-forwarded-host'] = req.headers['host'] ?? ''
+      forwardedHeaders['x-forwarded-proto'] = 'https'
+
+      let raw = `${req.method} ${reqPath} HTTP/1.1\r\n`
+      for (const [key, value] of Object.entries(forwardedHeaders)) {
+        if (Array.isArray(value)) {
+          for (const v of value) raw += `${key}: ${v}\r\n`
+        } else if (value !== undefined) {
+          raw += `${key}: ${value}\r\n`
+        }
+      }
+      raw += '\r\n'
+
+      proxySocket.write(raw)
+      if (head.length > 0) proxySocket.write(head)
+
+      proxySocket.pipe(socket)
+      socket.pipe(proxySocket)
+    })
+
+    proxySocket.on('error', (err) => {
+      console.error(`WebSocket proxy error ${reqPath}:`, err.message)
+      if (!socket.destroyed) {
+        socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n')
+        socket.destroy()
+      }
+    })
+    socket.on('error', () => proxySocket.destroy())
+  })
+}
